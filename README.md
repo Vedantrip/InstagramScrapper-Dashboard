@@ -1,20 +1,38 @@
 # IG Engagement Analyzer
 
-Backend that takes Instagram handles, pulls their recent reels via the Apify
-`apify/instagram-reel-scraper` actor, and computes engagement metrics:
+Backend that takes Instagram handles, pulls recent reels through Apify, computes performance metrics, and can enrich the result with MountLift Audience Intelligence.
+
+## Performance intelligence
+
+The existing `/analyze` endpoint remains backward compatible and provides:
 
 - Avg / median reel views
 - Avg likes & comments
 - Engagement rate (%) = (likes + comments) / views, averaged per reel
-- Consistency score (coefficient of variation of views) + a plain-English label
+- Consistency score (coefficient of variation) + label
 - Posting frequency (avg days between reels)
-- View-to-follower ratio (only if you supply follower counts — the reel
-  scraper doesn't return follower count itself)
-- Flags reels where Instagram hid the like count (`likesCount: -1` in the
-  raw data) so they don't silently wreck your averages
+- View-to-follower ratio when a follower count is supplied
+- Flags for reels where Instagram hid the like count
 
-Outputs both raw JSON and a downloadable `.xlsx` report (Summary sheet +
-per-reel Detail sheet).
+## Audience intelligence
+
+`POST /analyze/full` adds HypeBridge public-data audience intelligence through the Apify actor:
+
+`hypebridge~influencer-evaluation-agent-instagram-tiktok`
+
+The HypeBridge result is **estimated audience intelligence based on public signals**. It is not official Instagram Insights and should never be represented as such. The unified response uses the labels `estimated`, `Audience Intelligence · Estimated from public signals`, and an explicit confidence value.
+
+The complete raw HypeBridge response is retained under `raw.audience` so the normalizer can evolve as the third-party actor changes.
+
+MountLift also calculates its own proprietary score. The current v1 weighting is:
+
+- Engagement Quality: 30%
+- Audience Quality: 25%
+- Content Performance: 20%
+- Consistency: 15%
+- Profile Quality: 10%
+
+This score is independent of any third-party score returned by HypeBridge.
 
 ## Setup
 
@@ -22,16 +40,31 @@ per-reel Detail sheet).
 cd backend
 npm install
 cp .env.example .env
-# edit .env and paste your Apify API token (Apify Console -> Settings -> Integrations)
+# edit .env and paste your Apify API token
 npm start
 ```
 
 Server runs on `http://localhost:4000` by default.
 
+### Environment
+
+Required:
+
+`APIFY_TOKEN` — existing Apify API token used by the scraper and HypeBridge calls. It must stay server-side.
+
+Optional:
+
+`APIFY_ACTOR_ID` — existing Instagram scraper actor; defaults to `apify~instagram-scraper`.
+
+`HYPEBRIDGE_ACTOR_ID` — audience actor; defaults to `hypebridge~influencer-evaluation-agent-instagram-tiktok`.
+
+`DEFAULT_REELS_LIMIT` — existing reel limit; defaults to `12`.
+
 ## Endpoints
 
 ### `POST /analyze`
-Returns JSON metrics for one or more handles.
+
+Existing performance-only contract. Input remains compatible:
 
 ```json
 {
@@ -41,43 +74,76 @@ Returns JSON metrics for one or more handles.
 }
 ```
 
-`reelsLimit` and `followerCounts` are optional.
+### `POST /analyze/full`
 
-### `POST /analyze/export`
-Same input, but responds with a downloadable `.xlsx` file instead of JSON.
+Returns performance + estimated audience intelligence + MountLift proprietary scores. It reuses the same handles/body pattern as `/analyze` and executes creators sequentially to reduce Apify pressure. A failure in one stage or creator is returned in that creator's `errors` field or the top-level `errors` array rather than aborting the entire batch.
 
-## A note on accuracy
+Example shape:
 
-The scraper reads the **logged-out, public** version of a profile — so
-numbers can differ slightly from what you see logged into your own account
-(private-account engagement is hidden from logged-out viewers), and counts
-are a snapshot from the moment of the run, not live. This is normal and
-matches how Apify's actor behaves — see their FAQ if numbers look off.
-
-## Frontend dashboard
-
-Plain HTML/CSS/JS, no build step — open `frontend/index.html` in a browser
-(or serve it with any static server) while the backend is running.
-
-- Paste one or more handles (comma or newline separated) → "run audit"
-- Each handle renders as a readout card: avg/median views, engagement rate,
-  post cadence, and a "signal" waveform of recent reel view counts
-- The consistency badge is framed as signal-to-noise — teal "consistent" /
-  amber "somewhat inconsistent" / red "highly inconsistent"
-- "export .xlsx" re-runs the same query through `/analyze/export` and downloads
-  the report
-
-By default it talks to `http://localhost:4000`. To point it at a different
-backend URL, set `window.__ML_API_BASE__` before `app.js` loads, e.g. add
-this in `index.html`:
-```html
-<script>window.__ML_API_BASE__ = "https://your-deployed-backend.com";</script>
+```json
+{
+  "results": [
+    {
+      "username": "creator",
+      "profile": {
+        "followers": 125000,
+        "following": 500,
+        "posts": 320,
+        "verified": false,
+        "profileUrl": "https://www.instagram.com/creator/"
+      },
+      "performance": {
+        "avgViews": 36200,
+        "medianViews": 29800,
+        "avgLikes": 1840,
+        "avgComments": 96,
+        "engagementRate": 4.8,
+        "postingFrequencyDays": 2.4,
+        "viewToFollowerRatio": 0.29,
+        "consistency": "Consistent"
+      },
+      "audience": {
+        "source": "estimated",
+        "label": "Audience Intelligence · Estimated from public signals",
+        "confidence": "medium",
+        "gender": [],
+        "age": [],
+        "locations": [],
+        "interests": []
+      },
+      "scores": {
+        "engagement": 91,
+        "audience": 78,
+        "content": 86,
+        "consistency": 92,
+        "profile": 80,
+        "overall": 86,
+        "methodology": "MountLift proprietary v1"
+      },
+      "raw": {
+        "performance": {},
+        "audience": {}
+      }
+    }
+  ],
+  "errors": []
+}
 ```
 
-## Next steps (not built yet)
+### `POST /analyze/export`
 
-- True batch mode at scale (the UI already accepts multiple handles, but for
-  50+ handles you'll want a job queue instead of the current sequential loop)
-- Caching raw Apify responses so re-running the same handle doesn't re-charge you
-- Optional: auto-fetch follower counts via `apify/instagram-profile-scraper`
-  so the views/follower ratio doesn't require manual input
+Existing performance export. Existing columns are preserved, with extra columns available for full-intelligence shaped results.
+
+### `POST /analyze/full/export`
+
+Full-intelligence XLSX export including profile, MountLift scores, audience source/confidence, and the existing reel detail sheet.
+
+## Accuracy / data semantics
+
+The scraper reads the logged-out public version of a profile. Public counts can differ from what is visible to a logged-in account, and results are snapshots at run time.
+
+Audience demographics from HypeBridge are estimates derived from public signals. They are **not official Instagram Insights**. Use `Verified Instagram Insights · Connected via Meta` only once MountLift integrates official Meta/Instagram data.
+
+## Runtime note
+
+The current OpsConsole proxy is configured for a 60-second request window while the scraper uses longer Apify timeouts. `/analyze/full` is intentionally sequential, but multi-creator audience runs can still exceed a 60-second frontend request window depending on actor cold-start time. At larger batch sizes, move full analysis behind a job queue/polling workflow rather than increasing synchronous concurrency.
