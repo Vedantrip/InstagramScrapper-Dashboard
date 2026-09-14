@@ -1,20 +1,21 @@
 import ExcelJS from "exceljs";
 
 /**
- * Builds an .xlsx workbook from an array of metrics objects
- * (as produced by computeMetricsForUsername), one per handle.
- * Returns the ExcelJS Workbook — caller decides how to ship it
- * (save to disk, stream as HTTP response, etc.)
+ * Builds an .xlsx workbook from an array of performance or full-intelligence
+ * results. Existing performance columns are preserved for compatibility.
  */
 export async function buildWorkbook(resultsArray) {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "IG Engagement Analyzer";
+  workbook.creator = "MountLift Insights";
   workbook.created = new Date();
 
-  // ---- Summary sheet ----
   const summary = workbook.addWorksheet("Summary");
   summary.columns = [
     { header: "Username", key: "username", width: 20 },
+    { header: "Followers", key: "followers", width: 14 },
+    { header: "Following", key: "following", width: 14 },
+    { header: "Posts", key: "posts", width: 12 },
+    { header: "Verified", key: "verified", width: 12 },
     { header: "Reels Analyzed", key: "reelsAnalyzed", width: 15 },
     { header: "Avg Views", key: "avgViews", width: 14 },
     { header: "Median Views", key: "medianViews", width: 14 },
@@ -26,29 +27,55 @@ export async function buildWorkbook(resultsArray) {
     { header: "Avg Days Between Posts", key: "avgDaysBetweenPosts", width: 20 },
     { header: "Follower Count", key: "followerCount", width: 15 },
     { header: "Views/Follower %", key: "viewToFollowerRatioPct", width: 16 },
+    { header: "MountLift Score", key: "overallScore", width: 16 },
+    { header: "Engagement Score", key: "engagementScore", width: 18 },
+    { header: "Audience Score", key: "audienceScore", width: 16 },
+    { header: "Content Score", key: "contentScore", width: 16 },
+    { header: "Consistency Score", key: "consistencyScore", width: 18 },
+    { header: "Audience Source", key: "audienceSource", width: 18 },
+    { header: "Audience Confidence", key: "audienceConfidence", width: 20 },
     { header: "Hidden-Like Reels", key: "hiddenLikesCount", width: 16 },
   ];
   summary.getRow(1).font = { bold: true };
 
   for (const r of resultsArray) {
+    const performance = r.performance || r;
+    const profile = r.profile || {};
+    const scores = r.scores || {};
+    const audience = r.audience || {};
+
     summary.addRow({
       username: r.username,
-      reelsAnalyzed: r.reelsAnalyzed,
-      avgViews: r.avgViews,
-      medianViews: r.medianViews,
-      avgLikes: r.avgLikes,
-      avgComments: r.avgComments,
-      avgEngagementRatePct: r.avgEngagementRatePct,
-      cov: r.consistency?.coefficientOfVariation,
-      consistencyLabel: r.consistency?.label,
-      avgDaysBetweenPosts: r.avgDaysBetweenPosts,
-      followerCount: r.followerCount,
-      viewToFollowerRatioPct: r.viewToFollowerRatioPct,
-      hiddenLikesCount: r.hiddenLikesCount,
+      followers: profile.followers ?? performance.followerCount ?? null,
+      following: profile.following,
+      posts: profile.posts,
+      verified: profile.verified ?? null,
+      reelsAnalyzed: performance.reelsAnalyzed,
+      avgViews: performance.avgViews,
+      medianViews: performance.medianViews,
+      avgLikes: performance.avgLikes,
+      avgComments: performance.avgComments,
+      avgEngagementRatePct: performance.avgEngagementRatePct ?? performance.engagementRate,
+      cov: performance.consistency?.coefficientOfVariation,
+      consistencyLabel: performance.consistency?.label ?? performance.consistency,
+      avgDaysBetweenPosts: performance.avgDaysBetweenPosts ?? performance.postingFrequencyDays,
+      followerCount: performance.followerCount,
+      viewToFollowerRatioPct: performance.viewToFollowerRatioPct != null
+        ? performance.viewToFollowerRatioPct
+        : typeof performance.viewToFollowerRatio === "number"
+          ? performance.viewToFollowerRatio * 100
+          : null,
+      overallScore: scores.overall,
+      engagementScore: scores.engagement,
+      audienceScore: scores.audience,
+      contentScore: scores.content,
+      consistencyScore: scores.consistency,
+      audienceSource: audience.source,
+      audienceConfidence: audience.confidence,
+      hiddenLikesCount: performance.hiddenLikesCount,
     });
   }
 
-  // ---- Reel-by-reel detail sheet ----
   const detail = workbook.addWorksheet("Reel Detail");
   detail.columns = [
     { header: "Username", key: "username", width: 20 },
@@ -66,7 +93,8 @@ export async function buildWorkbook(resultsArray) {
   detail.getRow(1).font = { bold: true };
 
   for (const r of resultsArray) {
-    for (const reel of r.perReel) {
+    const reels = r.performance?.perReel || r.perReel || [];
+    for (const reel of reels) {
       detail.addRow({
         username: r.username,
         shortCode: reel.shortCode,
